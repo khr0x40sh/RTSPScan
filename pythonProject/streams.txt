@@ -1,0 +1,6 @@
+stream
+stream1
+feed
+myfeed
+camera
+location
