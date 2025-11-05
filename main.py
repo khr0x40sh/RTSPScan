@@ -57,7 +57,7 @@ def load_list(path):
 # ----------------------------
 def check_rtsp_stream(ip, port=554, timeout=3, screenshot_dir=None,
                       resize=None, frame_attempts=3, delay_between=1.0,
-                      stream_name="", skip_describe=False, check_publish=False, username=None, password=None, ):
+                      stream_name="", skip_describe=False, grab_options=False, username=None, password=None, ):
     """
     Attempt to open RTSP (with optional credentials), read up to frame_attempts frames,
     and optionally save a screenshot.
@@ -93,12 +93,17 @@ def check_rtsp_stream(ip, port=554, timeout=3, screenshot_dir=None,
         elif "RTSP/1.0 200" not in desc:
             return {"ip": str(ip), "status": "no_response", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
 
-    # Optional PUBLISH test (requires flag)
-    if check_publish:
-        pub = rtspsocket.rtsp_publish_check(ip, port, stream_name, username, password, timeout)
-        if "200" in pub:
-            print(f"[!] {ip} allows RTSP PUBLISH to {stream_name}")
-            status = "publish;"
+    if grab_options:
+        resp = rtspsocket.rtsp_options(ip, port, timeout)
+        print(f"[!] {ip} - Server advertises the following OPTIONS:\n\n{resp}\n")
+
+    # Optional PUBLISH test (requires flag), needs work
+    #if check_publish:
+    #    pub = rtspsocket.rtsp_publish_check(ip, port, stream_name, username, password, timeout)
+    #    if "200" in pub:
+    #        print(f"[!] {ip} allows RTSP PUBLISH to {stream_name}")
+    #        status = "publish;"
+
     cap = cv2.VideoCapture(rtsp_url)
     if not cap.isOpened():
         status += "auth_failed"
@@ -148,7 +153,7 @@ def scan_host(ip, args, users, passes, stream_paths):
         if not users or not passes:
             res = check_rtsp_stream(ip, args.port, args.timeout, args.screenshot_dir,
                                     args.screenshot_resize, args.frame_attempts, args.frame_delay,
-                                    stream, args.skip_describe, args.check_publish)
+                                    stream, args.skip_describe, args.grab_options)
             results.append(res)
             if res["status"] == "open":
                 return results  # early stop across streams
@@ -160,7 +165,7 @@ def scan_host(ip, args, users, passes, stream_paths):
             for pw in passes:
                 res = check_rtsp_stream(ip, args.port, args.timeout, args.screenshot_dir,
                                         args.screenshot_resize, args.frame_attempts, args.frame_delay,
-                                        stream, args.skip_describe, args.check_publish, user, pw)
+                                        stream, args.skip_describe, args.grab_options, user, pw)
                 results.append(res)
                 if res["status"] == "open":
                     return results  # early stop per host on first success
@@ -207,10 +212,15 @@ def main():
         action="store_true",
         help="Skip the initial RTSP DESCRIBE test (default: perform it)"
     )
+    #parser.add_argument(
+    #    "--check-publish",
+    #    action="store_true",
+    #    help="Attempt RTSP PUBLISH to test for writable streams"
+    #)
     parser.add_argument(
-        "--check-publish",
+        "--grab-options",
         action="store_true",
-        help="Attempt RTSP PUBLISH to test for writable streams"
+        help="Grab RTSP options banner."
     )
 
     args = parser.parse_args()

@@ -29,6 +29,11 @@ def rtsp_describe(ip, port=554, stream_path="/", user=None, password=None, timeo
     request = "\r\n".join(headers)
     return rtsp_send_request(ip, port, request, timeout)
 
+def rtsp_options(ip, port=554, timeout=3):
+    url = f"rtsp://{ip}:{port}/"
+    req = f"OPTIONS {url} RTSP/1.0\r\nCSeq: 1\r\n\r\n"
+    return rtsp_send_request(ip, port, req, timeout)
+
 def rtsp_publish_check(ip, port=554, stream_path="/", user=None, password=None, timeout=3):
     if not stream_path.startswith("/"):
         stream_path = "/" + stream_path
