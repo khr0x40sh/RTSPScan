@@ -20,6 +20,7 @@ from PIL import Image
 import platform
 import socket as pysocket
 import numpy as np
+import rtspsocket
 
 # ----------------------------
 # Utility helpers
@@ -56,7 +57,7 @@ def load_list(path):
 # ----------------------------
 def check_rtsp_stream(ip, port=554, timeout=3, screenshot_dir=None,
                       resize=None, frame_attempts=3, delay_between=1.0,
-                      stream_name="", username=None, password=None):
+                      stream_name="", skip_describe=False, check_publish=False, username=None, password=None, ):
     """
     Attempt to open RTSP (with optional credentials), read up to frame_attempts frames,
     and optionally save a screenshot.
@@ -74,16 +75,34 @@ def check_rtsp_stream(ip, port=554, timeout=3, screenshot_dir=None,
 
     rtsp_url = f"rtsp://{auth}{ip}:{port}{stream_name}"
 
+    status = ""
+
     # quick port check
     try:
         with socket.create_connection((str(ip), port), timeout=timeout):
             pass
     except Exception:
-        return {"ip": str(ip), "status": "closed", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
+        status = "closed"
+        return {"ip": str(ip), "status": status, "screenshot": None, "user": username, "pass": password, "stream": stream_name}
 
+    # --- Phase 1: DESCRIBE handshake ---
+    if not skip_describe:
+        desc = rtspsocket.rtsp_describe(ip, port, stream_name, username, password, timeout)
+        if "RTSP/1.0 401" in desc:
+            return {"ip": str(ip), "status": "auth_required", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
+        elif "RTSP/1.0 200" not in desc:
+            return {"ip": str(ip), "status": "no_response", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
+
+    # Optional PUBLISH test (requires flag)
+    if check_publish:
+        pub = rtspsocket.rtsp_publish_check(ip, port, stream_name, username, password, timeout)
+        if "200" in pub:
+            print(f"[!] {ip} allows RTSP PUBLISH to {stream_name}")
+            status = "publish;"
     cap = cv2.VideoCapture(rtsp_url)
     if not cap.isOpened():
-        return {"ip": str(ip), "status": "auth_failed", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
+        status += "auth_failed"
+        return {"ip": str(ip), "status": status, "screenshot": None, "user": username, "pass": password, "stream": stream_name}
 
     frame = None
     for attempt in range(frame_attempts):
@@ -103,8 +122,10 @@ def check_rtsp_stream(ip, port=554, timeout=3, screenshot_dir=None,
                 save_screenshot(frame, screenshot_path, resize=resize)
             except Exception as e:
                 screenshot_path = f"ERROR: {e}"
-        return {"ip": str(ip), "status": "open", "screenshot": screenshot_path, "user": username, "pass": password, "stream": stream_name}
+        status +="open"
+        return {"ip": str(ip), "status": status, "screenshot": screenshot_path, "user": username, "pass": password, "stream": stream_name}
     else:
+        status += "open_but_no_frame"
         return {"ip": str(ip), "status": "open_but_no_frame", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
 
 # ----------------------------
@@ -127,7 +148,7 @@ def scan_host(ip, args, users, passes, stream_paths):
         if not users or not passes:
             res = check_rtsp_stream(ip, args.port, args.timeout, args.screenshot_dir,
                                     args.screenshot_resize, args.frame_attempts, args.frame_delay,
-                                    stream)
+                                    stream, args.skip_describe, args.check_publish)
             results.append(res)
             if res["status"] == "open":
                 return results  # early stop across streams
@@ -139,7 +160,7 @@ def scan_host(ip, args, users, passes, stream_paths):
             for pw in passes:
                 res = check_rtsp_stream(ip, args.port, args.timeout, args.screenshot_dir,
                                         args.screenshot_resize, args.frame_attempts, args.frame_delay,
-                                        stream, user, pw)
+                                        stream, args.skip_describe, args.check_publish, user, pw)
                 results.append(res)
                 if res["status"] == "open":
                     return results  # early stop per host on first success
@@ -181,6 +202,16 @@ def main():
     parser.add_argument("-P", "--Password", default=None, help="Password (Cannot be used with --passlist)")
     parser.add_argument("--auth-delay", type=float, default=0.0,
                         help="Delay between credential attempts per host in seconds (default 0.0)")
+    parser.add_argument(
+        "--skip-describe",
+        action="store_true",
+        help="Skip the initial RTSP DESCRIBE test (default: perform it)"
+    )
+    parser.add_argument(
+        "--check-publish",
+        action="store_true",
+        help="Attempt RTSP PUBLISH to test for writable streams"
+    )
 
     args = parser.parse_args()
 
@@ -263,14 +294,22 @@ def main():
                     results.append(res_record)
                     s = res_record["status"]
                     u, p, st = res_record.get("user"), res_record.get("pass"), res_record.get("stream")
-                    if s == "open":
-                        print(f"✅ {ip} - OPEN [{u}:{p}] stream='{st}' ({res_record.get('screenshot')})")
-                    elif s == "auth_failed":
-                        print(f"🔒 {ip} - auth failed [{u}:{p}] stream='{st}'")
-                    elif s == "open_but_no_frame":
-                        print(f"⚠️ {ip} - open but no frame [{u}:{p}] stream='{st}'")
-                    elif s == "closed":
-                        print(f"❌ {ip} - closed")
+                    output = ""
+                    if "open_but_no_frame" in s:
+                        output = f"⚠️ {ip} - open but no frame [{u}:{p}] stream='{st}'"
+                    elif "open" in s:
+                        output = f"✅ {ip} - OPEN [{u}:{p}] stream='{st}' ({res_record.get('screenshot')})"
+                    elif "auth_failed" in s:
+                        output = f"🔒 {ip} - auth failed [{u}:{p}] stream='{st}'"
+                    elif "closed" in s:
+                        output = f"❌ {ip} - closed"
+                    elif "no_response" in s:
+                        output = f"❌ {ip} - TCP {args.port} open, but no response."
+                    elif "auth_required" in s:
+                        output = f"❌ {ip} - DESCRIBE failed using [{u}:{p}]"
+                    if "publish" in s:
+                        output += " - MAY ALLOW PUBLISH (write)!!!"
+                    print(output)
             except Exception as e:
                 print(f"Error scanning {ip}: {e}")
 
