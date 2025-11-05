@@ -177,6 +177,8 @@ def main():
     # credential options
     parser.add_argument("--userlist", default=None, help="File with usernames (one per line)")
     parser.add_argument("--passlist", default=None, help="File with passwords (one per line)")
+    parser.add_argument("-U", "--User", default=None, help="Username (Cannot be used with --userlist)")
+    parser.add_argument("-P", "--Password", default=None, help="Password (Cannot be used with --passlist)")
     parser.add_argument("--auth-delay", type=float, default=0.0,
                         help="Delay between credential attempts per host in seconds (default 0.0)")
 
@@ -190,8 +192,14 @@ def main():
         return
 
     # load users/passes/stream paths
-    users = load_list(args.userlist)
-    passes = load_list(args.passlist)
+    if args.User is not None:
+        users = [args.User]
+    else:
+        users = load_list(args.userlist)
+    if args.Password is not None:
+        passes = [args.Password]
+    else:
+        passes = load_list(args.passlist)
 
     # compose stream path list (file first, then any --stream-name args)
     stream_paths = []
