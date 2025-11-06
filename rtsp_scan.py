@@ -21,6 +21,7 @@ import platform
 import socket as pysocket
 import numpy as np
 import rtspsocket
+from parsenmap import parse_nmap_xml, expand_to_job_list
 
 # ----------------------------
 # Utility helpers
@@ -83,19 +84,19 @@ def check_rtsp_stream(ip, port=554, timeout=3, screenshot_dir=None,
             pass
     except Exception:
         status = "closed"
-        return {"ip": str(ip), "status": status, "screenshot": None, "user": username, "pass": password, "stream": stream_name}
+        return {"ip": str(ip), "port": str(port), "status": status, "screenshot": None, "user": username, "pass": password, "stream": stream_name}
 
     # --- Phase 1: DESCRIBE handshake ---
     if not skip_describe:
         desc = rtspsocket.rtsp_describe(ip, port, stream_name, username, password, timeout)
         if "RTSP/1.0 401" in desc:
-            return {"ip": str(ip), "status": "auth_required", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
+            return {"ip": str(ip), "port": str(port), "status": "auth_required", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
         elif "RTSP/1.0 200" not in desc:
-            return {"ip": str(ip), "status": "no_response", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
+            return {"ip": str(ip), "port": str(port), "status": "no_response", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
 
     if grab_options:
         resp = rtspsocket.rtsp_options(ip, port, timeout)
-        print(f"[!] {ip} - Server advertises the following OPTIONS:\n\n{resp}\n")
+        print(f"[!] {ip}:{port} - Server advertises the following OPTIONS:\n\n{resp}\n")
 
     # Optional PUBLISH test (requires flag), needs work
     #if check_publish:
@@ -107,7 +108,7 @@ def check_rtsp_stream(ip, port=554, timeout=3, screenshot_dir=None,
     cap = cv2.VideoCapture(rtsp_url)
     if not cap.isOpened():
         status += "auth_failed"
-        return {"ip": str(ip), "status": status, "screenshot": None, "user": username, "pass": password, "stream": stream_name}
+        return {"ip": str(ip), "port": str(port), "status": status, "screenshot": None, "user": username, "pass": password, "stream": stream_name}
 
     frame = None
     for attempt in range(frame_attempts):
@@ -128,15 +129,15 @@ def check_rtsp_stream(ip, port=554, timeout=3, screenshot_dir=None,
             except Exception as e:
                 screenshot_path = f"ERROR: {e}"
         status +="open"
-        return {"ip": str(ip), "status": status, "screenshot": screenshot_path, "user": username, "pass": password, "stream": stream_name}
+        return {"ip": str(ip), "port": str(port), "status": status, "screenshot": screenshot_path, "user": username, "pass": password, "stream": stream_name}
     else:
         status += "open_but_no_frame"
-        return {"ip": str(ip), "status": "open_but_no_frame", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
+        return {"ip": str(ip), "port": str(port), "status": "open_but_no_frame", "screenshot": None, "user": username, "pass": password, "stream": stream_name}
 
 # ----------------------------
 # Per-host scanning
 # ----------------------------
-def scan_host(ip, args, users, passes, stream_paths):
+def scan_host(job, args, users, passes, stream_paths):
     """
     Handle one host sequentially:
       - iterate stream_paths (in order)
@@ -151,7 +152,7 @@ def scan_host(ip, args, users, passes, stream_paths):
     for stream in stream_paths:
         # if no credential lists => just try unauthenticated once for this stream
         if not users or not passes:
-            res = check_rtsp_stream(ip, args.port, args.timeout, args.screenshot_dir,
+            res = check_rtsp_stream(job["ip"], job["port"], args.timeout, args.screenshot_dir,
                                     args.screenshot_resize, args.frame_attempts, args.frame_delay,
                                     stream, args.skip_describe, args.grab_options)
             results.append(res)
@@ -163,7 +164,7 @@ def scan_host(ip, args, users, passes, stream_paths):
         # have credential lists -> try combos sequentially for this stream
         for user in users:
             for pw in passes:
-                res = check_rtsp_stream(ip, args.port, args.timeout, args.screenshot_dir,
+                res = check_rtsp_stream(job["ip"], job["port"], args.timeout, args.screenshot_dir,
                                         args.screenshot_resize, args.frame_attempts, args.frame_delay,
                                         stream, args.skip_describe, args.grab_options, user, pw)
                 results.append(res)
@@ -182,8 +183,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Scan CIDR for RTSP streams. Try multiple stream paths per host; credential lists supported; early-stop on first success per host."
     )
-    parser.add_argument("--cidr", required=True, help="CIDR (e.g., 192.168.1.0/24)")
-    parser.add_argument("--port", type=int, default=554, help="RTSP port (default 554)")
+    parser.add_argument("--cidr", default=None, help="CIDR (e.g., 192.168.1.0/24) or IP. Cannot be used with --nmap-xml.")
+    parser.add_argument("--nmap-xml", default=None, help="Read in RTSP targets from nmap xml file. Cannot be used with --port or --cidr.")
+    parser.add_argument("--port", type=int, default=554, help="RTSP port (default 554). Cannot be used with --nmap-xml.")
     parser.add_argument("--timeout", type=int, default=3, help="Socket timeout seconds (default 3)")
     parser.add_argument("--threads", type=int, default=20, help="Concurrent host threads (default 20)")
     parser.add_argument("--output", default=None, help="CSV output filename")
@@ -224,13 +226,28 @@ def main():
     )
 
     args = parser.parse_args()
+    network = None
 
-    # CIDR validation
-    try:
-        network = ipaddress.ip_network(args.cidr, strict=False)
-    except ValueError as e:
-        print(f"Invalid CIDR: {e}")
+    if args.cidr and args.nmap_xml:
+        print(f"[-] Cannot use both CIDR and NMAP XML Parser. Check your syntax and try again.")
         return
+    elif args.cidr is None and args.nmap_xml is None:
+        print(f"[-] Specify either a CIDR (--cidr 192.168.0.0/24) or NMAP XML file to parse (--nmap-xml nmaprtspscan.xml). Check your syntax and try again.")
+        return
+
+    if args.nmap_xml:
+        parsed = parse_nmap_xml(args.nmap_xml)
+        jobs = expand_to_job_list(parsed, prefer_rtsp_only=True, default_ports=[args.port, 8554, 554])
+        # jobs is list of dicts {ip, port, hostname, service, product}
+    else:
+        # fallback to CIDR expansion
+        # CIDR validation
+        try:
+            network = ipaddress.ip_network(args.cidr, strict=False)
+        except ValueError as e:
+            print(f"Invalid CIDR: {e}")
+            return
+        jobs = [{"ip": str(ip), "port": args.port, "hostname": None} for ip in network.hosts()]
 
     # load users/passes/stream paths
     if args.User is not None:
@@ -272,11 +289,14 @@ def main():
     except Exception:
         host_meta["scanner_local_ip"] = None
 
-    print(f"Scanning {args.cidr} (port {args.port}) ...")
+    if args.nmap_xml:
+        print(f"Scanning hosts/services found in {args.nmap_xml} ...")
+    else:
+        print(f"Scanning {args.cidr} (port {args.port}) ...")
     print(f"Streams to try (in order): {stream_paths}")
     if users and passes:
         print(f"Using credential lists: {len(users)} users × {len(passes)} passwords (early stop per host)")
-    elif users or passes:
+    elif users or passes: # I may change this so you can supply just a username...
         print("⚠️ Both userlist and passlist should be supplied for credential scanning.")
     else:
         print("No credentials supplied (testing unauthenticated access only).")
@@ -285,7 +305,7 @@ def main():
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = {executor.submit(scan_host, ip, args, users, passes, stream_paths): ip for ip in network.hosts()}
+        futures = {executor.submit(scan_host, job, args, users, passes, stream_paths): job for job in jobs}
 
         for future in concurrent.futures.as_completed(futures):
             ip = futures[future]
@@ -294,6 +314,7 @@ def main():
                 for res in host_results:
                     res_record = {
                         "ip": res.get("ip"),
+                        "port": res.get("port"),
                         "status": res.get("status"),
                         "timestamp": datetime.now().isoformat(),
                         "user": res.get("user"),
