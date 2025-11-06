@@ -84,7 +84,7 @@ python rtsp_scan.py --cidr 10.0.0.0/24 \
 
 Save a snapshot from any stream that opens successfully:
 ```
-python rtsp_scan.py --cidr 10.0.1.0/24 --screenshot-dir ./screens
+python rtsp_scan.py --cidr 10.0.1.0/24 --screenshot-dir ./screenshots
 ```
 
 ### Skipping DESCRIBE (faster scan)
@@ -132,7 +132,7 @@ Threading: Each IP/port/path combination is tested concurrently via ThreadPoolEx
 
 Brute-force: Usernames and passwords are tried per host in threaded batches.
 
-Publish checks: Experimental ANNOUNCE / RECORD handshake support for rtsp-simple-server.
+~~Publish checks: Experimental ANNOUNCE / RECORD handshake support for rtsp-simple-server.~~ (BROKEN)
 
 ## ⚠️ Legal Disclaimer
 
