@@ -15,7 +15,7 @@ can capture a single frame as a screenshot, and parses **Nmap XML output** for a
 - ✅ Multiple stream path attempts per host  
 - ✅ Optional frame capture using OpenCV / Pillow  
 - ✅ Threaded brute-force of username/password lists  
-- ✅ Optional publish capability check (ANNOUNCE / RECORD)  
+- ✅ Optional publish capability check (ANNOUNCE / RECORD) <- Currently BROKEN 
 - ✅ Output-friendly console reporting  
 - ✅ Lightweight dependencies (pure Python + OpenCV)
 
